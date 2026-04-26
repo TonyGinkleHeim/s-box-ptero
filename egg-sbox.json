@@ -1,0 +1,104 @@
+{
+    "_comment": "s&box Dedicated Server egg. SteamCMD app id 1892930. Sourced from sbox.game/dev/doc/networking/dedicated-servers (April 2026).",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-04-26T00:00:00+00:00",
+    "name": "s&box Dedicated Server",
+    "author": "ops@local",
+    "description": "Facepunch s&box dedicated server. Source 2 + .NET 8. Installs via SteamCMD (anonymous) app 1892930. See https://sbox.game/dev/doc/networking/dedicated-servers/",
+    "features": [
+        "steam_disk_space"
+    ],
+    "docker_images": {
+        "ghcr.io/tonyginkleheim/sbox:latest": "ghcr.io/tonyginkleheim/sbox:latest"
+    },
+    "file_denylist": [],
+    "startup": "./sbox-server.exe +game {{SBOX_GAME}} {{SBOX_MAP}} +hostname \"{{SERVER_NAME}}\" +port {{SERVER_PORT}} +net_query_port {{QUERY_PORT}} {{EXTRA_ARGS}}",
+    "config": {
+        "files": "{}",
+        "startup": "{\r\n    \"done\": \"Server started\"\r\n}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# s&box installer — runs inside the install container (ghcr.io/parkervcp/installers:debian)\nset -e\n\napt-get update\napt-get install -y --no-install-recommends curl tar lib32gcc-s1 ca-certificates wget unzip file\n\nmkdir -p /mnt/server/steamcmd\ncd /mnt/server/steamcmd\n\ncurl -sSL https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz | tar -xz\n\nBETA_FLAG=\"\"\nif [ \"${SRCDS_BETA}\" = \"1\" ] || [ \"${SRCDS_BETA}\" = \"true\" ] || [ \"${SRCDS_BETA}\" = \"staging\" ]; then\n    BETA_FLAG=\"-beta staging\"\nfi\n\n./steamcmd.sh +force_install_dir /mnt/server +login anonymous +app_update ${SRCDS_APPID} ${BETA_FLAG} validate +quit\n\n# Surface the executable at the working directory root (Pterodactyl runs from /home/container == /mnt/server)\nif [ ! -f /mnt/server/sbox-server.exe ]; then\n    echo \"WARN: sbox-server.exe not found at install root. Listing /mnt/server:\"\n    ls -la /mnt/server\nfi\n\nchmod +x /mnt/server/sbox-server.exe 2>/dev/null || true\n\necho \"Install complete.\"\n",
+            "container": "ghcr.io/parkervcp/installers:debian",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Steam App ID",
+            "description": "SteamCMD app id for the s&box dedicated server. Default 1892930 (per official docs).",
+            "env_variable": "SRCDS_APPID",
+            "default_value": "1892930",
+            "user_viewable": true,
+            "user_editable": false,
+            "rules": "required|string|max:20",
+            "field_type": "text"
+        },
+        {
+            "name": "Use Staging Branch",
+            "description": "Set to 1 to install the -beta staging branch. Leave 0 for stable.",
+            "env_variable": "SRCDS_BETA",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1,true,false,staging",
+            "field_type": "text"
+        },
+        {
+            "name": "Server Name",
+            "description": "Hostname shown in the server browser.",
+            "env_variable": "SERVER_NAME",
+            "default_value": "s&box Dedicated Server",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Game Package",
+            "description": "Game package ident to load (e.g. facepunch.sandbox).",
+            "env_variable": "SBOX_GAME",
+            "default_value": "facepunch.sandbox",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:128",
+            "field_type": "text"
+        },
+        {
+            "name": "Map Package",
+            "description": "Optional map package ident (e.g. facepunch.flatgrass). Leave blank to let the game pick.",
+            "env_variable": "SBOX_MAP",
+            "default_value": "facepunch.flatgrass",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:128",
+            "field_type": "text"
+        },
+        {
+            "name": "Query Port",
+            "description": "UDP port used for server browser queries (+net_query_port).",
+            "env_variable": "QUERY_PORT",
+            "default_value": "27016",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1024,65535",
+            "field_type": "text"
+        },
+        {
+            "name": "Extra Startup Args",
+            "description": "Appended verbatim to the startup line. Example: +net_game_server_token YOURTOKEN +maxplayers 16",
+            "env_variable": "EXTRA_ARGS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:512",
+            "field_type": "text"
+        }
+    ]
+}
