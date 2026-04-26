@@ -59,6 +59,23 @@ RUN         wget -q https://packages.microsoft.com/config/debian/13/packages-mic
             && apt-get install -y --no-install-recommends dotnet-runtime-10.0 aspnetcore-runtime-10.0 \
             && rm -rf /var/lib/apt/lists/*
 
+# The s&box engine resolves its native libs via dirname(/proc/self/exe) of the .NET host,
+# which is /usr/share/dotnet. Drop symlinks pointing at where the install lands the libs
+# (/home/container/...) so dlopen succeeds without us having to ship a custom apphost.
+RUN         set -e \
+            && cd /usr/share/dotnet \
+            && for n in libtier0.so libfilesystem_stdio.so liblocalize.so librendersystemempty.so \
+                       libengine2.so libschemasystem.so libmaterialsystem2.so libmeshsystem.so \
+                       libanimationsystem.so libvfx_vulkan.so librendersystemvulkan.so \
+                       libphonon.so libSkiaSharp.so libHarfBuzzSharp.so libsteam_api.so \
+                       libavdevice.so.62 libavfilter.so.11 libogg.so.0 libvorbis.so.0 \
+                       libvorbisenc.so.2 libvorbisfile.so.3; do \
+                ln -sf /home/container/bin/linuxsteamrt64/$n /usr/share/dotnet/$n; \
+            done \
+            && for n in libsteamwebrtc.so steamclient.so; do \
+                ln -sf /home/container/$n /usr/share/dotnet/$n; \
+            done
+
 RUN         locale-gen en_US.UTF-8
 ENV         LANG=en_US.UTF-8 LANGUAGE=en_US:en LC_ALL=en_US.UTF-8
 
