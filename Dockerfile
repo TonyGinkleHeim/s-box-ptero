@@ -6,7 +6,7 @@ LABEL       org.opencontainers.image.source="https://github.com/TonyGinkleHeim/s
 LABEL       org.opencontainers.image.description="s&box Pterodactyl egg runtime (.NET 8 native)"
 
 ENV         DEBIAN_FRONTEND=noninteractive
-
+ 
 RUN         apt-get update \
             && apt-get install -y --no-install-recommends \
                 ca-certificates \
