@@ -35,7 +35,7 @@ RUN         wget -q https://packages.microsoft.com/config/debian/12/packages-mic
             && dpkg -i /tmp/ms.deb \
             && rm /tmp/ms.deb \
             && apt-get update \
-            && apt-get install -y --no-install-recommends dotnet-runtime-8.0 aspnetcore-runtime-8.0 \
+            && apt-get install -y --no-install-recommends dotnet-runtime-10.0 aspnetcore-runtime-10.0 \
             && rm -rf /var/lib/apt/lists/*
 
 RUN         locale-gen en_US.UTF-8
