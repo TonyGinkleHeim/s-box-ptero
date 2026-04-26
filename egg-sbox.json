@@ -7,7 +7,7 @@
     "exported_at": "2026-04-26T00:00:00+00:00",
     "name": "s&box Dedicated Server",
     "author": "ops@local",
-    "description": "Facepunch s&box dedicated server. Source 2 + .NET 8. Installs via SteamCMD (anonymous) app 1892930. See https://sbox.game/dev/doc/networking/dedicated-servers/",
+    "description": "Facepunch s&box dedicated server (Wine runtime). Image bakes a Wine prefix + Windows .NET; entrypoint runs sbox-server.exe via wine. App 1892930 via SteamCMD. See https://sbox.game/dev/doc/networking/dedicated-servers/",
     "features": [
         "steam_disk_space"
     ],
@@ -15,25 +15,25 @@
         "ghcr.io/tonyginkleheim/sbox:latest": "ghcr.io/tonyginkleheim/sbox:latest"
     },
     "file_denylist": [],
-    "startup": "./sbox-server.exe +game {{SBOX_GAME}} {{SBOX_MAP}} +hostname \"{{SERVER_NAME}}\" +port {{SERVER_PORT}} +net_query_port {{QUERY_PORT}} {{EXTRA_ARGS}}",
+    "startup": "start-sbox",
     "config": {
         "files": "{}",
-        "startup": "{\r\n    \"done\": \"Server started\"\r\n}",
-        "logs": "{}",
+        "startup": "{\r\n    \"done\": \"Loading game|Server started\"\r\n}",
+        "logs": "{\r\n    \"custom\": true,\r\n    \"location\": \"logs/*.log\"\r\n}",
         "stop": "^C"
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/bash\n# s&box installer — runs inside the install container (ghcr.io/parkervcp/installers:debian)\nset -e\n\napt-get update\napt-get install -y --no-install-recommends curl tar lib32gcc-s1 ca-certificates wget unzip file\n\nmkdir -p /mnt/server/steamcmd\ncd /mnt/server/steamcmd\n\ncurl -sSL https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz | tar -xz\n\nBETA_FLAG=\"\"\nif [ \"${SRCDS_BETA}\" = \"1\" ] || [ \"${SRCDS_BETA}\" = \"true\" ] || [ \"${SRCDS_BETA}\" = \"staging\" ]; then\n    BETA_FLAG=\"-beta staging\"\nfi\n\n./steamcmd.sh +force_install_dir /mnt/server +login anonymous +app_update ${SRCDS_APPID} ${BETA_FLAG} validate +quit\n\n# Surface the executable at the working directory root (Pterodactyl runs from /home/container == /mnt/server)\nif [ ! -f /mnt/server/sbox-server.exe ]; then\n    echo \"WARN: sbox-server.exe not found at install root. Listing /mnt/server:\"\n    ls -la /mnt/server\nfi\n\nchmod +x /mnt/server/sbox-server.exe 2>/dev/null || true\n\necho \"Install complete.\"\n",
-            "container": "ghcr.io/parkervcp/installers:debian",
-            "entrypoint": "bash"
+            "script": "#!/bin/sh\n# Image entrypoint seeds the prebaked Wine prefix + s&box files into /home/container on first boot,\n# and runs SteamCMD on every boot when SBOX_AUTO_UPDATE=1, so this install step is intentionally minimal.\nmkdir -p /mnt/server/projects /mnt/server/logs /mnt/server/sbox\necho 'Install complete; runtime image will seed files on first boot.'\n",
+            "container": "alpine:3",
+            "entrypoint": "sh"
         }
     },
     "variables": [
         {
             "name": "Steam App ID",
-            "description": "SteamCMD app id for the s&box dedicated server. Default 1892930 (per official docs).",
-            "env_variable": "SRCDS_APPID",
+            "description": "SteamCMD app id for the s&box dedicated server. Default 1892930.",
+            "env_variable": "SBOX_APP_ID",
             "default_value": "1892930",
             "user_viewable": true,
             "user_editable": false,
@@ -41,29 +41,79 @@
             "field_type": "text"
         },
         {
-            "name": "Use Staging Branch",
-            "description": "Set to 1 to install the -beta staging branch. Leave 0 for stable.",
-            "env_variable": "SRCDS_BETA",
-            "default_value": "0",
+            "name": "Branch",
+            "description": "Optional Steam beta branch (e.g. 'staging'). Blank = stable.",
+            "env_variable": "SBOX_BRANCH",
+            "default_value": "",
             "user_viewable": true,
             "user_editable": true,
-            "rules": "required|string|in:0,1,true,false,staging",
+            "rules": "nullable|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Auto Update",
+            "description": "1 = run SteamCMD on every container boot. 0 = boot from existing files.",
+            "env_variable": "SBOX_AUTO_UPDATE",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|in:0,1",
             "field_type": "text"
         },
         {
             "name": "Server Name",
-            "description": "Hostname shown in the server browser.",
+            "description": "Hostname shown in the server browser. Avoid bare ampersands (&) — Pterodactyl HTML-escapes them. Use 'and' or quote them.",
             "env_variable": "SERVER_NAME",
-            "default_value": "s&box Dedicated Server",
+            "default_value": "Sandbox Dedicated Server",
             "user_viewable": true,
             "user_editable": true,
             "rules": "required|string|max:64",
             "field_type": "text"
         },
         {
+            "name": "Max Players",
+            "description": "Maximum players. Leave blank to use the gamemode default. Some gamemodes ignore this.",
+            "env_variable": "MAX_PLAYERS",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|numeric|between:1,256",
+            "field_type": "text"
+        },
+        {
+            "name": "Local Project (.sbproj)",
+            "description": "Optional. Relative path under /home/container/projects/ to a .sbproj file (e.g. mygame/mygame.sbproj). Overrides the Game Package field when set and the file exists.",
+            "env_variable": "SBOX_PROJECT",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Game Server Token",
+            "description": "Optional Steam game server login token (+net_game_server_token). Generate at https://steamcommunity.com/dev/managegameservers. Lets the server keep the same Steam ID across restarts.",
+            "env_variable": "TOKEN",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Direct Connect",
+            "description": "1 = expose IP/port for direct connection (sets +net_hide_address 0). 0 = Steam relay only. Experimental.",
+            "env_variable": "ENABLE_DIRECT_CONNECT",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|in:0,1",
+            "field_type": "text"
+        },
+        {
             "name": "Game Package",
-            "description": "Game package ident to load (e.g. facepunch.sandbox).",
-            "env_variable": "SBOX_GAME",
+            "description": "Game package ident to load (e.g. facepunch.sandbox). Ignored when Local Project is set.",
+            "env_variable": "GAME",
             "default_value": "facepunch.sandbox",
             "user_viewable": true,
             "user_editable": true,
@@ -73,7 +123,7 @@
         {
             "name": "Map Package",
             "description": "Optional map package ident (e.g. facepunch.flatgrass). Leave blank to let the game pick.",
-            "env_variable": "SBOX_MAP",
+            "env_variable": "MAP",
             "default_value": "facepunch.flatgrass",
             "user_viewable": true,
             "user_editable": true,
@@ -92,8 +142,8 @@
         },
         {
             "name": "Extra Startup Args",
-            "description": "Appended verbatim to the startup line. Example: +net_game_server_token YOURTOKEN +maxplayers 16",
-            "env_variable": "EXTRA_ARGS",
+            "description": "Appended verbatim to the sbox-server.exe command line.",
+            "env_variable": "SBOX_EXTRA_ARGS",
             "default_value": "",
             "user_viewable": true,
             "user_editable": true,
