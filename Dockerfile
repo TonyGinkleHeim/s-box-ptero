@@ -1,6 +1,6 @@
 # s&box Dedicated Server image for Pterodactyl
-# Base: Debian 12 (bookworm) — has the glibc/libssl/libicu versions Source 2 + .NET 8 expect.
-FROM        --platform=$TARGETOS/$TARGETARCH debian:bookworm-slim
+# Base: Debian 13 (trixie) — engine2 needs glibc 2.38+ and GLIBCXX_3.4.31+. Bookworm ships glibc 2.36.
+FROM        --platform=$TARGETOS/$TARGETARCH debian:trixie-slim
 
 LABEL       org.opencontainers.image.source="https://github.com/TonyGinkleHeim/sbox-pterodactyl"
 LABEL       org.opencontainers.image.description="s&box Pterodactyl egg runtime (.NET 8 native)"
@@ -16,7 +16,7 @@ RUN         apt-get update \
                 libgcc-s1 \
                 libstdc++6 \
                 libcurl4 \
-                libicu72 \
+                libicu76 \
                 libssl3 \
                 libsdl2-2.0-0 \
                 libgl1 \
@@ -52,7 +52,7 @@ RUN         apt-get update \
                 binutils \
             && rm -rf /var/lib/apt/lists/*
 
-RUN         wget -q https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb -O /tmp/ms.deb \
+RUN         wget -q https://packages.microsoft.com/config/debian/13/packages-microsoft-prod.deb -O /tmp/ms.deb \
             && dpkg -i /tmp/ms.deb \
             && rm /tmp/ms.deb \
             && apt-get update \
