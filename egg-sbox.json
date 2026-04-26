@@ -7,7 +7,7 @@
     "exported_at": "2026-04-26T00:00:00+00:00",
     "name": "s&box Dedicated Server",
     "author": "ops@local",
-    "description": "Facepunch s&box dedicated server (Wine runtime). Image bakes a Wine prefix + Windows .NET; entrypoint runs sbox-server.exe via wine. App 1892930 via SteamCMD. See https://sbox.game/dev/doc/networking/dedicated-servers/",
+    "description": "Facepunch s&box dedicated server (.NET 8 native). Installs via SteamCMD with account login (app 1892930 is not anonymous-eligible). The Linux build currently lives on the staging branch (depot 1892933) — see SBOX_BRANCH variable.",
     "features": [
         "steam_disk_space"
     ],
@@ -15,21 +15,51 @@
         "ghcr.io/tonyginkleheim/sbox:latest": "ghcr.io/tonyginkleheim/sbox:latest"
     },
     "file_denylist": [],
-    "startup": "start-sbox",
+    "startup": "bash -c 'KIND=$(cat .sbox-binary-kind 2>/dev/null || echo windows); if [ \"$KIND\" = native ] && [ -x ./sbox-server ]; then BIN=./sbox-server; else BIN=./sbox-server.exe; fi; set -- \"$BIN\"; if [ -n \"{{SBOX_PROJECT}}\" ] && [ -f \"projects/{{SBOX_PROJECT}}\" ]; then set -- \"$@\" +game \"projects/{{SBOX_PROJECT}}\"; else set -- \"$@\" +game {{SBOX_GAME}}; fi; [ -n \"{{SBOX_MAP}}\" ] && set -- \"$@\" {{SBOX_MAP}}; set -- \"$@\" +hostname \"{{SERVER_NAME}}\" +port {{SERVER_PORT}}; [ -n \"{{QUERY_PORT}}\" ] && set -- \"$@\" +net_query_port {{QUERY_PORT}}; [ -n \"{{MAX_PLAYERS}}\" ] && set -- \"$@\" +maxplayers {{MAX_PLAYERS}}; [ -n \"{{TOKEN}}\" ] && set -- \"$@\" +net_game_server_token {{TOKEN}}; [ \"{{ENABLE_DIRECT_CONNECT}}\" = \"1\" ] && set -- \"$@\" +net_hide_address 0; set -- \"$@\" {{EXTRA_ARGS}}; exec \"$@\"'",
     "config": {
         "files": "{}",
         "startup": "{\r\n    \"done\": \"Loading game|Server started\"\r\n}",
-        "logs": "{\r\n    \"custom\": true,\r\n    \"location\": \"logs/*.log\"\r\n}",
+        "logs": "{}",
         "stop": "^C"
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/sh\n# Image entrypoint seeds the prebaked Wine prefix + s&box files into /home/container on first boot,\n# and runs SteamCMD on every boot when SBOX_AUTO_UPDATE=1, so this install step is intentionally minimal.\nmkdir -p /mnt/server/projects /mnt/server/logs /mnt/server/sbox\necho 'Install complete; runtime image will seed files on first boot.'\n",
-            "container": "alpine:3",
-            "entrypoint": "sh"
+            "script": "#!/bin/bash\n# s&box installer.\n# App 1892930 is not anonymous-eligible; we log in with STEAM_USERNAME / STEAM_PASSWORD.\n# Email Steam Guard handled in two rounds:\n#   Round 1: STEAM_GUARD blank -> login fails fast, Steam emails the code.\n#   Round 2: paste code into STEAM_GUARD, reinstall, sentry caches under /mnt/server/.steam/.\n#   Round 3+: leave STEAM_GUARD blank, sentry handles it.\nset -e\n\napt-get update\napt-get install -y --no-install-recommends curl tar lib32gcc-s1 ca-certificates wget unzip file rsync findutils coreutils\n\nif [ -z \"${STEAM_USERNAME}\" ] || [ -z \"${STEAM_PASSWORD}\" ]; then\n    echo '================================================================'\n    echo 'ERROR: STEAM_USERNAME and STEAM_PASSWORD must be set on this server.'\n    echo 'App 1892930 (s&box dedicated server) is not anonymously available;'\n    echo 'an account that owns s&box is required.'\n    echo '================================================================'\n    exit 1\nfi\n\nmkdir -p /mnt/server/steamcmd /mnt/server/.steam /mnt/server/Steam\nln -sfn /mnt/server/Steam /mnt/server/.steam/root\nln -sfn /mnt/server/Steam /mnt/server/.steam/steam\n\ncd /mnt/server/steamcmd\ncurl -sSL https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz | tar -xz\n\nBETA_FLAG=\"\"\nif [ -n \"${SBOX_BRANCH}\" ]; then\n    BETA_FLAG=\"-beta ${SBOX_BRANCH}\"\nfi\n\nrun_steamcmd() {\n    local platform=\"$1\"\n    local -a args=(\n        +@ShutdownOnFailedCommand 1\n        +@NoPromptForPassword 1\n        +@sSteamCmdForcePlatformType \"${platform}\"\n        +force_install_dir /mnt/server\n    )\n    if [ -n \"${STEAM_GUARD}\" ]; then\n        args+=( +set_steam_guard_code \"${STEAM_GUARD}\" )\n        args+=( +login \"${STEAM_USERNAME}\" \"${STEAM_PASSWORD}\" \"${STEAM_GUARD}\" )\n    else\n        args+=( +login \"${STEAM_USERNAME}\" \"${STEAM_PASSWORD}\" )\n    fi\n    args+=( +app_update ${SBOX_APP_ID} ${BETA_FLAG} validate +quit )\n\n    echo \"=== SteamCMD attempt: platform=${platform} branch=${SBOX_BRANCH:-public} (user=${STEAM_USERNAME}, guard=$( [ -n \\\"${STEAM_GUARD}\\\" ] && echo provided || echo blank )) ===\"\n    HOME=/mnt/server ./steamcmd.sh \"${args[@]}\" || echo \"steamcmd exited non-zero (continuing)\"\n}\n\nfind_server_binary() {\n    find /mnt/server -maxdepth 6 -type f \\( -name 'sbox-server.exe' -o -name 'sbox-server' \\) 2>/dev/null | head -n 1\n}\n\n# Try linux first (native binary preferred), then fall back to windows depot if Steam refuses linux for this branch.\nrun_steamcmd linux\nFOUND=\"$(find_server_binary || true)\"\n\nif [ -z \"${FOUND}\" ]; then\n    echo 'linux platform produced no server binary — retrying as windows'\n    run_steamcmd windows\n    FOUND=\"$(find_server_binary || true)\"\nfi\n\nif [ -z \"${FOUND}\" ]; then\n    echo '================================================================'\n    echo 'ERROR: install did not produce sbox-server(.exe).'\n    if [ -z \"${STEAM_GUARD}\" ]; then\n        echo 'Likely cause: this is the FIRST install on this Steam account/device.'\n        echo 'Steam should have just emailed you a Steam Guard code.'\n        echo 'Open the panel -> Variables tab, paste the code into STEAM_GUARD,'\n        echo 'and click Reinstall again. Leave it blank after that.'\n    else\n        echo 'A guard code was provided but the depot still did not download.'\n        echo 'Possible causes: bad code, expired code (>15 min), wrong password,'\n        echo 'account does not own s&box, branch typo, or two-factor mobile guard.'\n    fi\n    echo '----------------------------------------------------------------'\n    echo 'Depot contents under /mnt/server:'\n    find /mnt/server -maxdepth 5 -type f | head -200\n    echo '================================================================'\n    exit 1\nfi\n\necho \"Found server binary: ${FOUND}\"\nfile \"${FOUND}\" || true\n\nFOUND_DIR=\"$(dirname \"${FOUND}\")\"\nif [ \"${FOUND_DIR}\" != \"/mnt/server\" ]; then\n    echo \"Lifting ${FOUND_DIR} -> /mnt/server\"\n    rsync -a \"${FOUND_DIR}/\" /mnt/server/\nfi\n\nchmod +x /mnt/server/sbox-server.exe 2>/dev/null || true\nchmod +x /mnt/server/sbox-server 2>/dev/null || true\n\nif [ -f /mnt/server/sbox-server ]; then\n    echo 'native' > /mnt/server/.sbox-binary-kind\nelse\n    echo 'windows' > /mnt/server/.sbox-binary-kind\nfi\n\necho 'Install complete. /mnt/server top-level:'\nls -la /mnt/server\necho \"binary kind: $(cat /mnt/server/.sbox-binary-kind)\"\n",
+            "container": "ghcr.io/parkervcp/installers:debian",
+            "entrypoint": "bash"
         }
     },
     "variables": [
+        {
+            "name": "Steam Username",
+            "description": "Steam account login name. Account must own s&box.",
+            "env_variable": "STEAM_USERNAME",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam Password",
+            "description": "Steam account password. Stored encrypted in the panel database.",
+            "env_variable": "STEAM_PASSWORD",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:128",
+            "field_type": "text"
+        },
+        {
+            "name": "Steam Guard (email code)",
+            "description": "Email Steam Guard code. First install: leave blank, hit Reinstall, you get an email, paste the code here, hit Reinstall again. Clear it after that — sentry file at /home/container/.steam caches the device.",
+            "env_variable": "STEAM_GUARD",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:16",
+            "field_type": "text"
+        },
         {
             "name": "Steam App ID",
             "description": "SteamCMD app id for the s&box dedicated server. Default 1892930.",
@@ -42,32 +72,52 @@
         },
         {
             "name": "Branch",
-            "description": "Optional Steam beta branch (e.g. 'staging'). Blank = stable.",
+            "description": "Steam beta branch. Linux-native binary currently lives on 'staging' — leave 'staging' until Facepunch promotes it to public. Blank = public/stable.",
             "env_variable": "SBOX_BRANCH",
-            "default_value": "",
+            "default_value": "staging",
             "user_viewable": true,
             "user_editable": true,
             "rules": "nullable|string|max:64",
             "field_type": "text"
         },
         {
-            "name": "Auto Update",
-            "description": "1 = run SteamCMD on every container boot. 0 = boot from existing files.",
-            "env_variable": "SBOX_AUTO_UPDATE",
-            "default_value": "1",
-            "user_viewable": true,
-            "user_editable": true,
-            "rules": "required|in:0,1",
-            "field_type": "text"
-        },
-        {
             "name": "Server Name",
-            "description": "Hostname shown in the server browser. Avoid bare ampersands (&) — Pterodactyl HTML-escapes them. Use 'and' or quote them.",
+            "description": "Hostname shown in the server browser. Avoid bare ampersands (&) — Pterodactyl HTML-escapes them. Use 'and' instead.",
             "env_variable": "SERVER_NAME",
             "default_value": "Sandbox Dedicated Server",
             "user_viewable": true,
             "user_editable": true,
             "rules": "required|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Game Package",
+            "description": "Game package ident to load (e.g. facepunch.sandbox). Ignored when Local Project is set.",
+            "env_variable": "SBOX_GAME",
+            "default_value": "facepunch.sandbox",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:128",
+            "field_type": "text"
+        },
+        {
+            "name": "Map Package",
+            "description": "Optional map package ident (e.g. facepunch.flatgrass). Leave blank to let the game pick.",
+            "env_variable": "SBOX_MAP",
+            "default_value": "facepunch.flatgrass",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:128",
+            "field_type": "text"
+        },
+        {
+            "name": "Query Port",
+            "description": "UDP port used for server browser queries (+net_query_port).",
+            "env_variable": "QUERY_PORT",
+            "default_value": "27016",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1024,65535",
             "field_type": "text"
         },
         {
@@ -111,39 +161,9 @@
             "field_type": "text"
         },
         {
-            "name": "Game Package",
-            "description": "Game package ident to load (e.g. facepunch.sandbox). Ignored when Local Project is set.",
-            "env_variable": "GAME",
-            "default_value": "facepunch.sandbox",
-            "user_viewable": true,
-            "user_editable": true,
-            "rules": "required|string|max:128",
-            "field_type": "text"
-        },
-        {
-            "name": "Map Package",
-            "description": "Optional map package ident (e.g. facepunch.flatgrass). Leave blank to let the game pick.",
-            "env_variable": "MAP",
-            "default_value": "facepunch.flatgrass",
-            "user_viewable": true,
-            "user_editable": true,
-            "rules": "nullable|string|max:128",
-            "field_type": "text"
-        },
-        {
-            "name": "Query Port",
-            "description": "UDP port used for server browser queries (+net_query_port).",
-            "env_variable": "QUERY_PORT",
-            "default_value": "27016",
-            "user_viewable": true,
-            "user_editable": true,
-            "rules": "required|integer|between:1024,65535",
-            "field_type": "text"
-        },
-        {
             "name": "Extra Startup Args",
-            "description": "Appended verbatim to the sbox-server.exe command line.",
-            "env_variable": "SBOX_EXTRA_ARGS",
+            "description": "Appended verbatim to the sbox-server command line.",
+            "env_variable": "EXTRA_ARGS",
             "default_value": "",
             "user_viewable": true,
             "user_editable": true,
