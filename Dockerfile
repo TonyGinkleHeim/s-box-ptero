@@ -50,6 +50,8 @@ RUN         apt-get update \
                 netbase \
                 file \
                 binutils \
+                gdb \
+                strace \
             && rm -rf /var/lib/apt/lists/*
 
 RUN         wget -q https://packages.microsoft.com/config/debian/13/packages-microsoft-prod.deb -O /tmp/ms.deb \
