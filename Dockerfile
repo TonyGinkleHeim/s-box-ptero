@@ -22,6 +22,26 @@ RUN         apt-get update \
                 libgl1 \
                 libglib2.0-0 \
                 libtinfo6 \
+                libvulkan1 \
+                libxcb1 \
+                libx11-6 \
+                libxext6 \
+                libxrandr2 \
+                libxinerama1 \
+                libxi6 \
+                libxcursor1 \
+                libxss1 \
+                libfontconfig1 \
+                libfreetype6 \
+                libpulse0 \
+                libasound2 \
+                libudev1 \
+                libusb-1.0-0 \
+                libpci3 \
+                zlib1g \
+                libatomic1 \
+                libnss3 \
+                libnspr4 \
                 locales \
                 tar \
                 xz-utils \
@@ -29,6 +49,7 @@ RUN         apt-get update \
                 iproute2 \
                 netbase \
                 file \
+                binutils \
             && rm -rf /var/lib/apt/lists/*
 
 RUN         wget -q https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb -O /tmp/ms.deb \
