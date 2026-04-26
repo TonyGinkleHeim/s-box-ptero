@@ -1,92 +1,127 @@
-# s&box Dedicated Server image for Pterodactyl
-# Base: Debian 13 (trixie) — engine2 needs glibc 2.38+ and GLIBCXX_3.4.31+. Bookworm ships glibc 2.36.
-FROM        --platform=$TARGETOS/$TARGETARCH debian:trixie-slim
+# s&box Dedicated Server (Wine runtime) — Linux server build is broken in the staging branch
+# (libengine2.so +0x1375216 segfault after CDirWatcher init, April 2026). Run the Windows
+# depot under Wine instead, which is also Facepunch's own recommendation pre-launch.
+#
+# Stage 1: bake a Wine prefix + Windows .NET 10 runtime + the s&box server depot.
+# Stage 2: Alpine + Wine runtime; entrypoint seeds prefix into /home/container on first boot.
 
-LABEL       org.opencontainers.image.source="https://github.com/TonyGinkleHeim/sbox-pterodactyl"
-LABEL       org.opencontainers.image.description="s&box Pterodactyl egg runtime (.NET 8 native)"
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 1: Builder
+# ─────────────────────────────────────────────────────────────────────────────
+FROM debian:trixie-slim AS builder
 
-ENV         DEBIAN_FRONTEND=noninteractive
- 
-RUN         apt-get update \
-            && apt-get install -y --no-install-recommends \
-                ca-certificates \
-                curl \
-                wget \
-                gnupg \
-                libgcc-s1 \
-                libstdc++6 \
-                libcurl4 \
-                libicu76 \
-                libssl3 \
-                libsdl2-2.0-0 \
-                libgl1 \
-                libglib2.0-0 \
-                libtinfo6 \
-                libvulkan1 \
-                libxcb1 \
-                libx11-6 \
-                libxext6 \
-                libxrandr2 \
-                libxinerama1 \
-                libxi6 \
-                libxcursor1 \
-                libxss1 \
-                libfontconfig1 \
-                libfreetype6 \
-                libpulse0 \
-                libasound2 \
-                libudev1 \
-                libusb-1.0-0 \
-                libpci3 \
-                zlib1g \
-                libatomic1 \
-                libnss3 \
-                libnspr4 \
-                locales \
-                tar \
-                xz-utils \
-                tzdata \
-                iproute2 \
-                netbase \
-                file \
-                binutils \
-                gdb \
-                strace \
-            && rm -rf /var/lib/apt/lists/*
+ARG DEBIAN_FRONTEND=noninteractive
+ARG BAKE_WINETRICKS_VERBS="win10 vcrun2022"
+ARG BAKE_WIN_DOTNET_VERSION=10.0.0
+ARG BAKE_SBOX_APP_ID=1892930
+ARG BAKE_SBOX_CACHE_BUSTER=static
+ARG BAKE_STEAMCMD_TIMEOUT=900
 
-RUN         wget -q https://packages.microsoft.com/config/debian/13/packages-microsoft-prod.deb -O /tmp/ms.deb \
-            && dpkg -i /tmp/ms.deb \
-            && rm /tmp/ms.deb \
-            && apt-get update \
-            && apt-get install -y --no-install-recommends dotnet-runtime-10.0 aspnetcore-runtime-10.0 \
-            && rm -rf /var/lib/apt/lists/*
+RUN dpkg --add-architecture i386 \
+    && sed -i 's/^Components: main$/& contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+       ca-certificates \
+       cabextract \
+       git \
+       make \
+       psmisc \
+       wget \
+       wine \
+       wine32 \
+       wine64 \
+       libwine \
+       libwine:i386 \
+       fonts-wine \
+       winbind \
+       xauth \
+       xserver-xorg-core \
+       xvfb \
+    && apt-get clean \
+    && rm -rf /tmp/* /var/tmp/* /var/lib/apt/lists/*
 
-# The s&box engine resolves its native libs via dirname(/proc/self/exe) of the .NET host,
-# which is /usr/share/dotnet. Drop symlinks pointing at where the install lands the libs
-# (/home/container/...) so dlopen succeeds without us having to ship a custom apphost.
-RUN         set -e \
-            && cd /usr/share/dotnet \
-            && for n in libtier0.so libfilesystem_stdio.so liblocalize.so librendersystemempty.so \
-                       libengine2.so libschemasystem.so libmaterialsystem2.so libmeshsystem.so \
-                       libanimationsystem.so libvfx_vulkan.so librendersystemvulkan.so \
-                       libphonon.so libSkiaSharp.so libHarfBuzzSharp.so libsteam_api.so \
-                       libavdevice.so.62 libavfilter.so.11 libogg.so.0 libvorbis.so.0 \
-                       libvorbisenc.so.2 libvorbisfile.so.3; do \
-                ln -sf /home/container/bin/linuxsteamrt64/$n /usr/share/dotnet/$n; \
-            done \
-            && for n in libsteamwebrtc.so steamclient.so; do \
-                ln -sf /home/container/$n /usr/share/dotnet/$n; \
-            done
+RUN git clone --depth 1 https://github.com/Winetricks/winetricks.git /tmp/winetricks \
+    && cd /tmp/winetricks \
+    && make install \
+    && rm -rf /tmp/winetricks
 
-RUN         locale-gen en_US.UTF-8
-ENV         LANG=en_US.UTF-8 LANGUAGE=en_US:en LC_ALL=en_US.UTF-8
+RUN mkdir -p /work && cd /work && \
+    WINEPREFIX=/work/wineprefix xvfb-run winetricks -q --force ${BAKE_WINETRICKS_VERBS} && \
+    wget -q "https://builds.dotnet.microsoft.com/dotnet/Runtime/${BAKE_WIN_DOTNET_VERSION}/dotnet-runtime-${BAKE_WIN_DOTNET_VERSION}-win-x64.exe" -O dotnet-installer.exe && \
+    WINEPREFIX=/work/wineprefix xvfb-run wine dotnet-installer.exe /install /quiet /norestart && \
+    rm dotnet-installer.exe && \
+    rm -rf "/work/wineprefix/drive_c/ProgramData/Package Cache"
 
-RUN         useradd -m -d /home/container -s /bin/bash container
-USER        container
-ENV         USER=container HOME=/home/container
-WORKDIR     /home/container
+# Anonymous SteamCMD is rejected for app 1892930. Build proceeds without prebaked depot;
+# entrypoint will SteamCMD at runtime using STEAM_USERNAME/STEAM_PASSWORD/STEAM_GUARD.
+RUN mkdir -p /work/server && echo "runtime SteamCMD will populate this" > /work/server/.placeholder
 
-STOPSIGNAL  SIGINT
+RUN if ! find /work/wineprefix/drive_c -name hostfxr.dll 2>/dev/null | grep -q .; then \
+        echo "warn: hostfxr.dll not found — Windows .NET may have failed to install" >&2; \
+    fi
 
-COPY        --chown=container:container ./entrypoint.sh /entrypoint.sh
-CMD         [ "/bin/bash", "/entrypoint.sh" ]
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2: Runtime (SteamCMD on Alpine + Wine)
+# ─────────────────────────────────────────────────────────────────────────────
+FROM steamcmd/steamcmd:alpine
+
+LABEL org.opencontainers.image.source="https://github.com/TonyGinkleHeim/sbox-pterodactyl"
+LABEL org.opencontainers.image.description="s&box Pterodactyl egg runtime (Wine)"
+LABEL org.opencontainers.image.licenses="MIT"
+
+ENV CONTAINER_HOME=/home/container \
+    HOME=/home/container \
+    WINEPREFIX=/home/container/.wine \
+    WINEARCH=win64 \
+    WINEDEBUG=-all \
+    WINEDLLOVERRIDES=icu,icuuc=d \
+    SBOX_BAKED_WINEPREFIX=/opt/sbox-wine-prefix \
+    SBOX_APP_ID=1892930 \
+    SBOX_INSTALL_DIR=/home/container/sbox \
+    SBOX_SERVER_EXE=/home/container/sbox/sbox-server.exe \
+    SBOX_AUTO_UPDATE=1 \
+    SBOX_LOG_KEEP=10 \
+    STEAM_PLATFORM=windows \
+    DOTNET_EnableWriteXorExecute=0 \
+    DOTNET_TieredCompilation=0 \
+    DOTNET_ReadyToRun=0 \
+    DOTNET_ZapDisable=1 \
+    GAME= \
+    MAP= \
+    SERVER_NAME= \
+    SBOX_PROJECT= \
+    SBOX_EXTRA_ARGS= \
+    XDG_RUNTIME_DIR=/tmp
+
+RUN apk add --no-cache \
+        bash \
+        ca-certificates \
+        gnutls \
+        libgcc \
+        libstdc++ \
+        tar \
+        wget \
+        wine
+
+RUN mkdir -p \
+        /home/container/.wine \
+        /home/container/.local/share \
+        /home/container/projects \
+        /home/container/logs \
+        /home/container/sbox \
+    && chmod 1777 /tmp
+
+COPY --from=builder /work/wineprefix /opt/sbox-wine-prefix
+
+RUN chmod -R u+rwX,g+rX,o+rX /opt/sbox-wine-prefix
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh \
+    && chmod 0755 /usr/local/bin/entrypoint.sh
+
+WORKDIR /home/container
+
+STOPSIGNAL SIGINT
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["start-sbox"]
